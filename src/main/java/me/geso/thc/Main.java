@@ -4,18 +4,23 @@ import lombok.Getter;
 import lombok.ToString;
 import lombok.extern.slf4j.Slf4j;
 
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLSocketFactory;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URI;
 import java.nio.ByteBuffer;
-import java.nio.channels.*;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-// TODO enable lombok
 // TODO https support
 // TODO HTTP/2 support
 
@@ -229,6 +234,10 @@ class HttpRequest {
     public boolean writeEntity(SocketChannel sch) throws IOException {
         return false; // finished.
     }
+
+    public boolean isSsl() {
+        return "https".equals(uri.getScheme());
+    }
 }
 
 enum HttpStateType {
@@ -258,6 +267,7 @@ class HttpState {
 @Slf4j
 class HttpClient implements Closeable {
     private Set<SocketChannel> channels;
+    private SocketFactory socketFactory = SSLSocketFactory.getDefault();
 
     private final Selector selector;
 
@@ -275,13 +285,20 @@ class HttpClient implements Closeable {
         // TODO keep-alive support
         request.getHeaders().add("Connection", "close");
 
-        SocketChannel socketChannel = SocketChannel.open();
-        socketChannel.configureBlocking(false);
-        socketChannel.connect(new InetSocketAddress(request.getHost(), request.getPort()));
+        InetSocketAddress inetSocketAddress = new InetSocketAddress(request.getHost(), request.getPort());
+        if (request.isSsl()) {
+            Socket socket = socketFactory.createSocket(request.getHost(), request.getPort());
+        } else {
+            SocketChannel socketChannel = request.isSsl()
+                    ? socketFactory.createSocket(request.getHost(), request.getPort()).getChannel()
+                    : SocketChannel.open();
+            socketChannel.configureBlocking(false);
+            socketChannel.connect(inetSocketAddress);
 
-        SelectionKey selectionKey = socketChannel.register(selector, SelectionKey.OP_CONNECT);
-        selectionKey.attach(new HttpState(request, handler));
-        this.channels.add(socketChannel);
+            SelectionKey selectionKey = socketChannel.register(selector, SelectionKey.OP_CONNECT);
+            selectionKey.attach(new HttpState(request, handler));
+            this.channels.add(socketChannel);
+        }
     }
 
     public void waitAll() {
@@ -403,7 +420,7 @@ public class Main {
 
     public static void main(String[] args) throws IOException {
         try (HttpClient httpClient = new HttpClient()) {
-            httpClient.post(URI.create("http://64p.org/"), "hoge", new HttpHandler() {
+            httpClient.post(URI.create("https://twitter.com/"), "hoge", new HttpHandler() {
                 @Override
                 public void onHeader(HttpResponse response) {
                     System.out.println(response);
